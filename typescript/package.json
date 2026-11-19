@@ -1,6 +1,6 @@
 {
   "name": "keymaster-market-protocol",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "KeymasterMarketProtocol v1 目录编解码与校验（证明验签由产品侧注入）",
   "type": "module",
   "main": "dist/index.js",

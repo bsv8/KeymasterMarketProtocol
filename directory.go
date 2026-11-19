@@ -9,10 +9,9 @@
 package marketprotocol
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"slices"
 	"sort"
 	"unicode/utf8"
 )
@@ -85,18 +84,17 @@ func DecodeDirectory(raw []byte, verifyURL URLVerifier, verifyFiles FilesVerifie
 	if !utf8.Valid(raw) {
 		return nil, fmt.Errorf("directory response must be UTF-8")
 	}
-	var doc struct {
-		Apps []json.RawMessage `json:"apps"`
-	}
-	if err := strictUnmarshal(raw, &doc); err != nil {
+	doc, err := decodeObject(raw, "apps")
+	if err != nil {
 		return nil, err
 	}
-	if doc.Apps == nil {
+	var apps []json.RawMessage
+	if value := doc["apps"]; value == nil || json.Unmarshal(value, &apps) != nil || apps == nil {
 		return nil, fmt.Errorf("directory apps must be an array")
 	}
 	seen := map[string]bool{}
-	out := make([]AppEntry, 0, len(doc.Apps))
-	for i, item := range doc.Apps {
+	out := make([]AppEntry, 0, len(apps))
+	for i, item := range apps {
 		entry, err := decodeAppItem(item, verifyURL, verifyFiles)
 		if err != nil {
 			return nil, fmt.Errorf("apps[%d]: %w", i, err)
@@ -112,39 +110,24 @@ func DecodeDirectory(raw []byte, verifyURL URLVerifier, verifyFiles FilesVerifie
 }
 
 func decodeAppItem(raw json.RawMessage, verifyURL URLVerifier, verifyFiles FilesVerifier) (AppEntry, error) {
-	var presence map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &presence); err != nil {
+	item, err := decodeObject(raw, "url", "files")
+	if err != nil {
 		return AppEntry{}, err
 	}
-	// 显式 null 与字段缺席不同：按协议省略渠道表示不提供该渠道，
-	// 传入 null 属于错误类型，须与 TS 同样拒绝整份目录。
-	if value, ok := presence["url"]; ok && len(bytes.TrimSpace(value)) != 0 && string(bytes.TrimSpace(value)) == "null" {
-		return AppEntry{}, fmt.Errorf("url channel invalid")
-	}
-	if value, ok := presence["files"]; ok && len(bytes.TrimSpace(value)) != 0 && string(bytes.TrimSpace(value)) == "null" {
-		return AppEntry{}, fmt.Errorf("files channel invalid")
-	}
-	var item struct {
-		URL   *struct {
-			Publication string `json:"publication"`
-		} `json:"url"`
-		Files *struct {
-			Publication      string `json:"publication"`
-			EntrySeedhashhex string `json:"indexseedhashhex"`
-		} `json:"files"`
-	}
-	if err := strictUnmarshal(raw, &item); err != nil {
-		return AppEntry{}, err
-	}
-	if item.URL == nil && item.Files == nil {
+	if len(item) == 0 {
 		return AppEntry{}, fmt.Errorf("at least one channel is required")
 	}
 	entry := AppEntry{}
-	if item.URL != nil {
-		if item.URL.Publication == "" {
+	if value := item["url"]; value != nil {
+		channel, err := decodeObject(value, "publication")
+		if err != nil {
+			return AppEntry{}, fmt.Errorf("url channel invalid")
+		}
+		var proof string
+		if json.Unmarshal(channel["publication"], &proof) != nil || proof == "" {
 			return AppEntry{}, fmt.Errorf("url publication required")
 		}
-		verified, err := verifyURL(item.URL.Publication)
+		verified, err := verifyURL(proof)
 		if err != nil {
 			return AppEntry{}, fmt.Errorf("url publication invalid: %w", err)
 		}
@@ -153,17 +136,22 @@ func decodeAppItem(raw json.RawMessage, verifyURL URLVerifier, verifyFiles Files
 		}
 		entry.AppPublicKeyHex, entry.AppVersion = verified.AppPublicKeyHex, verified.AppVersion
 		entry.Name, entry.Description, entry.IconURL = verified.Name, verified.Description, verified.IconURL
-		entry.URL = &URLEntry{Publication: item.URL.Publication, PublicationID: verified.PublicationID, Address: verified.URLAddress,
+		entry.URL = &URLEntry{Publication: proof, PublicationID: verified.PublicationID, Address: verified.URLAddress,
 			Name: verified.Name, Description: verified.Description, IconURL: verified.IconURL}
 	}
-	if item.Files != nil {
-		if item.Files.Publication == "" {
+	if value := item["files"]; value != nil {
+		channel, err := decodeObject(value, "publication", "indexseedhashhex")
+		if err != nil {
+			return AppEntry{}, fmt.Errorf("files channel invalid")
+		}
+		var proof, seed string
+		if json.Unmarshal(channel["publication"], &proof) != nil || proof == "" {
 			return AppEntry{}, fmt.Errorf("files publication required")
 		}
-		if !isSeedHex(item.Files.EntrySeedhashhex) {
+		if json.Unmarshal(channel["indexseedhashhex"], &seed) != nil || !isSeedHex(seed) {
 			return AppEntry{}, fmt.Errorf("files indexseedhashhex invalid")
 		}
-		verified, err := verifyFiles(item.Files.Publication)
+		verified, err := verifyFiles(proof)
 		if err != nil {
 			return AppEntry{}, fmt.Errorf("files publication invalid: %w", err)
 		}
@@ -178,27 +166,27 @@ func decodeAppItem(raw json.RawMessage, verifyURL URLVerifier, verifyFiles Files
 			entry.AppPublicKeyHex, entry.AppVersion = verified.AppPublicKeyHex, verified.AppVersion
 			entry.Name, entry.Description, entry.IconURL = verified.Name, verified.Description, verified.IconURL
 		}
-		entry.Files = &FilesEntry{Publication: item.Files.Publication, PublicationID: verified.PublicationID, EntrySeedhashhex: item.Files.EntrySeedhashhex,
+		entry.Files = &FilesEntry{Publication: proof, PublicationID: verified.PublicationID, EntrySeedhashhex: seed,
 			Name: verified.Name, Description: verified.Description, IconURL: verified.IconURL}
 	}
 	return entry, nil
 }
 
-// strictUnmarshal 拒绝未知字段与尾随内容；截断或解析失败整体失败。
-func strictUnmarshal(raw []byte, target any) error {
-	if len(bytes.TrimLeft(raw, " \t\r\n")) == 0 {
-		return fmt.Errorf("directory response empty")
+// Decode into a map so field names match exactly, unlike encoding/json's struct fallback.
+func decodeObject(raw []byte, fields ...string) (map[string]json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
+	if object == nil {
+		return nil, fmt.Errorf("expected JSON object")
 	}
-	var tail any
-	if err := decoder.Decode(&tail); err != io.EOF {
-		return fmt.Errorf("trailing JSON content")
+	for key := range object {
+		if !slices.Contains(fields, key) {
+			return nil, fmt.Errorf("unknown field %q", key)
+		}
 	}
-	return nil
+	return object, nil
 }
 
 func isSeedHex(value string) bool {
