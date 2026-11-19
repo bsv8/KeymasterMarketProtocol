@@ -1,0 +1,16 @@
+{
+  "name": "keymaster-market-protocol",
+  "version": "0.1.0",
+  "description": "KeymasterMarketProtocol v1 目录编解码与校验（证明验签由产品侧注入）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
