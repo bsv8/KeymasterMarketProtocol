@@ -12,4 +12,4 @@ Go 与 TS 各提供目录层校验流程：JSON 解析、每项渠道结构、�
 - Go：`DecodeDirectory(raw, verifyURL, verifyFiles)`（module `github.com/bsv8/KeymasterMarketProtocol`）
 - TS：`decodeDirectory(raw, verifyUrl, verifyFiles)`（package `keymaster-market-protocol`，入口 `dist/index.js`）
 
-跨语言一致性由工程仓 `npm run parity:keymaster-market-protocol` 固定语料锁定。
+跨语言一致性由工程仓 `pnpm run parity:keymaster-market-protocol` 固定语料锁定。
